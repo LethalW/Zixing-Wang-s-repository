@@ -1,0 +1,115 @@
+---
+title: "Untitled"
+author: "report"
+date: "2024-01-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+library(Tushare)
+library(TTR)
+library(pROC)
+library(caret)
+```
+# load data and display 
+```{r}
+PingAnBank=read.csv('PingAnBank.csv',row.names = 1)
+PingAnBank=PingAnBank[order(PingAnBank$trade_date),]
+head(PingAnBank)
+```
+# Filter the data and select useful variables and samples
+```{r}
+PingAnBank=as.data.frame(PingAnBank[,c(2,3,4,5,6,9,8,10)])
+# Select data from 2020 to the end of 2023
+rd=PingAnBank[which(PingAnBank$trade_date>20200000),]
+head(rd)
+```
+
+# A custom function used to calculate the yield
+```{r}
+LogReturn <- function(vx) {
+  return(diff(log(vx)))
+}
+```
+
+# The yield is calculated using a custom function and saved to the data set
+```{r}
+returnn <- LogReturn(rd$close)
+n=length(rd$trade_date)
+rd$return[2:n] <-returnn  
+```
+## The daily var of 70% confidence interval is calculated for the trading data from 2020 to 2023, and the normal distribution method is used. The var estimation method uses the mean and standard deviation of all returns in previous years to estimate the threshold of a certain confidence interval under these two parameters of previous years.
+```{r}
+rd <- na.omit(rd)
+m <- mean(rd$return)
+sd=sd(rd$return)
+var1=qnorm(0.30,m,sd)
+abs(var1)
+```
+### var1 0.01140941 means that there is a 70% chance that a one-day fall will not exceed 0.01140941, and conversely, there is only a 30% chance that a loss will exceed 0.01140941
+
+## For the increase, if the increase is greater than var1, it means no default and is marked as 0; if it is less than var1, it means default and is marked as 1.
+```{r}
+for (i in 1:length(rd$close)){
+  if (rd$pct_chg[i]> var1) {
+    rd$IsthestockinDefault[i] = 0
+  }else{
+    rd$IsthestockinDefault[i] = 1
+  }
+}
+```
+
+# The TTR package is used to calculate MACD, OBV and CCI indexes
+```{r}
+macd_data_rd <- data.frame(MACD(rd$close))
+DIF_rd <- macd_data_rd$macd
+DEA_rd <- macd_data_rd$signal
+MACD_rd <- 2 * (DIF_rd - DEA_rd)
+rd$MACD <- MACD_rd
+# Remove NA
+rd <- na.omit(rd)
+# Calculate OBV, VA = [(C-L)-(H-C)]/(H-C)*V, H is the top price, C is the closing price, L is the floor price, and V is the volume
+rd$OBV <- rd$vol *((rd$close -rd$low) - (rd$high-rd$close)) /(rd$high-rd$close)
+rd$CCI <- (sum(rd$high,rd$low,rd$close)/3 -  rd$MACD) / (( rd$MACD-rd$close)/5) /0.015
+rd <- na.omit(rd)
+rd[mapply(is.infinite, rd)] <- NA 
+rd <- na.omit(rd)
+head(rd)
+```
+### Set up the training test set
+```{r}
+set.seed(222)
+pre <- sample(913,456)
+rownames(rd)=c(1:length(rd$trade_date))
+
+train <- rd[sort(pre) ,]  ### Training dataset
+test <-  rd[-sort(pre) ,]  ## Test
+```
+
+## The machine learning logit model was established, and the test set was used to make predictions. The prediction variables are vol+change+return+MACD+OBV+CCI
+```{r}
+logit <-glm(IsthestockinDefault ~ vol+change+return+ MACD+OBV+CCI,family = binomial(link="logit"),train)
+
+### Logistic regression test set
+log_pre <- predict(logit,test,type='response')
+log_pre= ifelse(log_pre<0.5,0,1)
+# Confusion matrix evaluation model
+confusionMatrix(factor(log_pre),factor(test$IsthestockinDefault))
+```
+Conclusion: There are only two errors in the model.
+
+# ROC curve evaluation
+```{r}
+### Draw the ROC curve to evaluate the model effect
+library(pROC)
+log_2 <- roc(test$IsthestockinDefault,as.numeric(log_pre))
+plot(log_2, print.auc=TRUE, auc.polygon=TRUE, grid=c(0.1, 0.2),grid.col=c("green", "red"), 
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue", print.thres=TRUE,main='Logit model ROC')
+```
+
+Conclusion: The AUC area reaches 99.5%, which shows that the model has good performance.
