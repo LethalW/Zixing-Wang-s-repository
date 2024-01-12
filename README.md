@@ -1,5 +1,4 @@
 # Zixing-Wang-s-repository
-Personal Coding
 
 Project topic: Using Logit machine learning model to predict stock default.
 
